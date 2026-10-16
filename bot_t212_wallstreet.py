@@ -348,40 +348,42 @@ def run(dry_run: bool, max_minutes: int = 0):
         if not ventana_compras:
             log.info("   🛡️ Fuera de ventana de compras (solo se permite abrir entre 15:45 y 21:00). Gestionando cartera...")
         elif active_count < MAX_POSITIONS and free_eur >= 2.00:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             candidates = []
 
-            for y_sym, t212_sym in UNIVERSE.items():
+            def eval_ticker(item):
+                y_sym, t212_sym = item
                 if t212_sym in held_tickers:
-                    continue
-
+                    return None
                 try:
                     price, rsi, closes, vol_actual, vol_media, ema20, ema50 = get_market_data(y_sym)
                     if price <= 0 or len(closes) < 10:
-                        continue
-
-                    # Filtros de Momentum y Tendencia:
-                    # 1. En tendencia alcista sólida (Precio por encima de medias)
-                    trend_ok = price > ema20 and ema20 > ema50
-                    # 2. RSI en rango de empuje saludable (50 a 70)
-                    rsi_ok   = 50.0 <= rsi <= 70.0
-                    # 3. Tendencia a corto plazo positiva
+                        return None
+                    trend_ok    = price > ema20 and ema20 > ema50
+                    rsi_ok      = 50.0 <= rsi <= 70.0
                     momentum_ok = closes[-1] >= closes[-3] if len(closes) >= 3 else True
-                    # 4. Volumen suficiente o normal
-                    vol_ok   = vol_actual >= (vol_media * 0.70) if vol_media > 0 else True
-
+                    vol_ok      = vol_actual >= (vol_media * 0.70) if vol_media > 0 else True
                     if trend_ok and rsi_ok and momentum_ok and vol_ok:
                         trend_strength = (price - ema50) / ema50
                         vol_ratio = vol_actual / vol_media if vol_media > 0 else 1.0
                         score = (trend_strength * 100) + (rsi - 50) + vol_ratio
-                        candidates.append({
+                        return {
                             "y_sym": y_sym,
                             "t212_sym": t212_sym,
                             "price": price,
                             "rsi": rsi,
                             "score": score
-                        })
-                except Exception as e:
-                    continue
+                        }
+                except Exception:
+                    return None
+                return None
+
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                futures = [pool.submit(eval_ticker, item) for item in UNIVERSE.items()]
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    if res:
+                        candidates.append(res)
 
             if candidates:
                 # Ordenar por el mayor score de momentum
@@ -399,7 +401,7 @@ def run(dry_run: bool, max_minutes: int = 0):
                     high_water_marks[top["t212_sym"]] = top["price"]
                     held_tickers.add(top["t212_sym"])
             else:
-                log.info("   ⏳ Escaneando los 48 activos: esperando que surja un setup claro de impulso...")
+                log.info(f"   ⏳ Escaneando los {len(UNIVERSE)} activos: esperando que surja un setup claro de impulso...")
 
         time.sleep(LOOP_SECONDS)
 
