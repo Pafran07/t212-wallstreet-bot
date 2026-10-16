@@ -1,7 +1,7 @@
 name: Wall Street Momentum Bot (24/5 Cloud)
 
 on:
-  # Permite lanzarlo manualmente con un botón desde el móvil/web cuando quieras
+  # Lanzamiento manual desde el móvil/web
   workflow_dispatch:
     inputs:
       max_minutes:
@@ -9,14 +9,15 @@ on:
         required: false
         default: '200'
 
-  # Programación automática Lunes a Viernes (Horario UTC -> Madrid es UTC+2 en verano / UTC+1 en invierno)
-  # Turno 1: Arranca a las 13:25 UTC (15:25 Madrid) y corre durante 200 min (hasta las 18:45 Madrid)
-  # Turno 2: Arranca a las 16:45 UTC (18:45 Madrid) y corre durante 195 min (hasta las 22:00 Madrid, cerrando todo a las 21:50)
+  # Horarios en UTC, robustos al cambio de hora verano/invierno de Madrid.
+  # El propio bot decide cuándo operar según la hora de Madrid (15:30-22:00).
+  # Turno 1: 13:00 UTC durante 200 min (hasta 16:20 UTC)
+  # Turno 2: 16:15 UTC durante 280 min (hasta 20:55 UTC, cubre cierre 21:50 Madrid en verano e invierno)
   schedule:
-    - cron: '25 13 * * 1-5'
-    - cron: '45 16 * * 1-5'
+    - cron: '0 13 * * 1-5'
+    - cron: '15 16 * * 1-5'
 
-# Evita que dos instancias se pisen si lanzas una manual mientras corre otra
+# Evita que dos instancias se pisen: el turno 2 relevará al turno 1
 concurrency:
   group: trading212-wallstreet-bot
   cancel-in-progress: true
@@ -24,7 +25,7 @@ concurrency:
 jobs:
   run-trading-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 220
+    timeout-minutes: 300
 
     env:
       TZ: Europe/Madrid
@@ -48,5 +49,12 @@ jobs:
 
       - name: 🚀 Ejecutar Bot Wall Street (Turno Automático)
         run: |
-          MINUTES="${{ github.event.inputs.max_minutes || '200' }}"
+          MINUTES="${{ github.event.inputs.max_minutes }}"
+          if [ -z "$MINUTES" ]; then
+            if [ "${{ github.event.schedule }}" = "15 16 * * 1-5" ]; then
+              MINUTES=280
+            else
+              MINUTES=200
+            fi
+          fi
           python -X utf8 bot_t212_wallstreet.py --max-minutes "$MINUTES"
