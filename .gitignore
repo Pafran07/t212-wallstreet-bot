@@ -1,0 +1,6 @@
+# Blindar claves privadas y logs locales
+.env
+*.log
+__pycache__/
+*.pyc
+.DS_Store

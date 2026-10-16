@@ -1,0 +1,52 @@
+name: Wall Street Momentum Bot (24/5 Cloud)
+
+on:
+  # Permite lanzarlo manualmente con un botón desde el móvil/web cuando quieras
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: 'Minutos de duración del turno (ej. 200)'
+        required: false
+        default: '200'
+
+  # Programación automática Lunes a Viernes (Horario UTC -> Madrid es UTC+2 en verano / UTC+1 en invierno)
+  # Turno 1: Arranca a las 13:25 UTC (15:25 Madrid) y corre durante 200 min (hasta las 18:45 Madrid)
+  # Turno 2: Arranca a las 16:45 UTC (18:45 Madrid) y corre durante 195 min (hasta las 22:00 Madrid, cerrando todo a las 21:50)
+  schedule:
+    - cron: '25 13 * * 1-5'
+    - cron: '45 16 * * 1-5'
+
+# Evita que dos instancias se pisen si lanzas una manual mientras corre otra
+concurrency:
+  group: trading212-wallstreet-bot
+  cancel-in-progress: true
+
+jobs:
+  run-trading-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 220
+
+    env:
+      TZ: Europe/Madrid
+      PYTHONUNBUFFERED: "1"
+      T212_API_KEY: ${{ secrets.T212_API_KEY }}
+      T212_SECRET_KEY: ${{ secrets.T212_SECRET_KEY }}
+      NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+
+    steps:
+      - name: 📥 Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Instalar librerías
+        run: pip install -r requirements.txt
+
+      - name: 🚀 Ejecutar Bot Wall Street (Turno Automático)
+        run: |
+          MINUTES="${{ github.event.inputs.max_minutes || '200' }}"
+          python -X utf8 bot_t212_wallstreet.py --max-minutes "$MINUTES"
