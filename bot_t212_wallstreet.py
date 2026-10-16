@@ -272,9 +272,7 @@ def run(dry_run: bool, max_minutes: int = 0):
 
         log.info(
             f"\n--- [Ciclo #{loop} {now_str}] "
-            f"Libre: {free_eur:.2f} € | Total: {total_eur:.2f} € | "
-            f"Posiciones: {len(portfolio)} | BUY pend: {len(buy_pending_tkrs)} | "
-            f"SELL pend: {len(sell_pending_tkrs)} | "
+            f"Slots ocupados: {len(portfolio)}/{MAX_POSITIONS} | "
             f"{'🟢 MERCADO ABIERTO' if mercado_abierto else '🔴 MERCADO CERRADO'} ---"
         )
 
@@ -289,8 +287,7 @@ def run(dry_run: bool, max_minutes: int = 0):
                 pnl_pct       = ppl_eur / approx_inv if approx_inv > 0 else 0
                 log.info(
                     f"   💤 {t212_ticker:12s} "
-                    f"Entrada=${avg_price:.2f} Actual=${current_price:.2f} "
-                    f"PnL={pnl_pct*100:+.2f}% ({ppl_eur:+.2f} €)  [en espera]"
+                    f"Rendimiento: {pnl_pct*100:+.2f}%  [en espera]"
                 )
             log.info(f"   ⏰ Mercado abre L-V a las 15:30. Próxima comprobación en 60s.")
             time.sleep(60)
@@ -300,7 +297,7 @@ def run(dry_run: bool, max_minutes: int = 0):
         for pos in portfolio:
             t212_ticker   = pos.get("ticker", "")
             if t212_ticker in sell_pending_tkrs:
-                log.info(f"   ⏳ {t212_ticker:12s} Orden de venta ya en cola, esperando ejecución...")
+                log.info(f"   ⏳ {t212_ticker:12s} Venta en proceso...")
                 continue
 
             qty           = float(pos.get("quantity", 0))
@@ -320,8 +317,7 @@ def run(dry_run: bool, max_minutes: int = 0):
             trail_tag   = "🎯ARMED" if is_trailing else "     "
             log.info(
                 f"   💼 {t212_ticker:12s} {trail_tag} "
-                f"Entrada=${avg_price:.2f} Actual=${current_price:.2f} "
-                f"Pico=${prev_max:.2f} PnL={pnl_pct*100:+.2f}% ({ppl_eur:+.2f} €)"
+                f"PnL={pnl_pct*100:+.2f}%"
             )
 
             # Hard Stop Loss
@@ -397,8 +393,8 @@ def run(dry_run: bool, max_minutes: int = 0):
                 approx_usd    = eur_to_spend * 1.08
                 shares_qty    = approx_usd / top["price"]
 
-                log.info(f"🔥 OPORTUNIDAD MOMENTUM ENCONTRADA: {top['y_sym']} | RSI={top['rsi']:.1f} | Score={top['score']:.2f}")
-                log.info(f"   💰 Comprando ~{eur_to_spend:.2f} € → {shares_qty:.4f} acciones @ ${top['price']:.2f}")
+                log.info(f"🔥 SEÑAL MOMENTUM: {top['y_sym']} (RSI={top['rsi']:.1f})")
+                log.info(f"   🚀 Abriendo posición en {top['y_sym']}...")
                 if place_order_market(top["t212_sym"], shares_qty, dry_run):
                     high_water_marks[top["t212_sym"]] = top["price"]
                     held_tickers.add(top["t212_sym"])
