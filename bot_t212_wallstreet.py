@@ -51,8 +51,8 @@ EMA_LONG        = 50
 VOLUME_MULT     = 0.95    # Volumen consistente
 
 HARD_SL         = 0.012   # Stop Loss en -1.2%
-TRAIL_ACTIVATE  = 0.014   # Trailing se arma en +1.4%
-TRAIL_CALLBACK  = 0.006   # Cierra si retrocede 0.6% desde el máximo
+TRAIL_ACTIVATE  = 0.012   # Trailing se arma en +1.20% (antes era +1.40%)
+TRAIL_CALLBACK  = 0.0045  # Callback óptimo de 0.45% desde el pico (equilibrio antiruido)
 
 LOOP_SECONDS    = 20
 MAX_POSITIONS   = 3       # Concentrar capital para no atomizar compras
