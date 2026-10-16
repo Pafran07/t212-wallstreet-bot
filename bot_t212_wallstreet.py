@@ -55,7 +55,7 @@ TRAIL_ACTIVATE  = 0.012   # Trailing se arma en +1.20% (antes era +1.40%)
 TRAIL_CALLBACK  = 0.0045  # Callback óptimo de 0.45% desde el pico (equilibrio antiruido)
 
 LOOP_SECONDS    = 20
-MAX_POSITIONS   = 3       # Concentrar capital para no atomizar compras
+MAX_POSITIONS   = 4       # 4 slots para aprovechar el capital ampliado (~57€ con regalo NVDA)
 NEWS_CACHE_MIN  = 15
 
 # ── Universo de tickers ───────────────────────────────────────────────────────
