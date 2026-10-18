@@ -414,15 +414,12 @@ def run(dry_run: bool, max_minutes: int = 0):
                 cached_sl_map[t212_ticker] = d_info["adaptive_sl"]
             sl_limit = cached_sl_map.get(t212_ticker, DEFAULT_SWING_SL)
 
-            # Reconstruir estado Breakeven / Trailing si la posición ya viene en ganancias de días previos
-            if pnl_pct >= SWING_BE_TRIGGER:
-                breakeven_active[t212_ticker] = True
+            # Reconstruir estado Trailing si la posición alcanza el objetivo de +7.50%
             if pnl_pct >= SWING_TP_TARGET:
                 trailing_active[t212_ticker] = True
 
             is_trailing = trailing_active.get(t212_ticker, False)
-            is_be_lock  = breakeven_active.get(t212_ticker, False)
-            status_tag  = "🎯TP_TRAIL" if is_trailing else ("🛡️BE_LOCK" if is_be_lock else f"SL:-{sl_limit*100:.1f}%")
+            status_tag  = "🎯TP_TRAIL" if is_trailing else f"SL:-{sl_limit*100:.1f}%"
 
             log.info(
                 f"   💼 {t212_ticker:12s} [{status_tag}] "
@@ -435,19 +432,9 @@ def run(dry_run: bool, max_minutes: int = 0):
                 if sell_position_market(t212_ticker, qty, "SWING_STOP_LOSS", dry_run):
                     high_water_marks.pop(t212_ticker, None)
                     trailing_active.pop(t212_ticker, None)
-                    breakeven_active.pop(t212_ticker, None)
                 continue
 
-            # B) ESCUDO BREAKEVEN SWING (+3.50% -> asegura +1.00%)
-            if is_be_lock and not is_trailing and pnl_pct <= SWING_BE_LOCK:
-                log.info(f"🛡️ {t212_ticker} BREAKEVEN SWING (+{pnl_pct*100:.2f}%). Asegurando ganancia acumulada...")
-                if sell_position_market(t212_ticker, qty, "SWING_BREAKEVEN", dry_run):
-                    high_water_marks.pop(t212_ticker, None)
-                    trailing_active.pop(t212_ticker, None)
-                    breakeven_active.pop(t212_ticker, None)
-                continue
-
-            # C) TAKE PROFIT (+7.50%) CON TRAILING DE CAPTURA
+            # B) TAKE PROFIT (+7.50%) CON TRAILING DE CAPTURA
             if is_trailing:
                 drawdown = (prev_max - current_price) / prev_max if prev_max > 0 else 0
                 if drawdown >= SWING_TRAIL_CB or pnl_pct <= SWING_TP_TARGET - 0.005:
@@ -455,7 +442,6 @@ def run(dry_run: bool, max_minutes: int = 0):
                     if sell_position_market(t212_ticker, qty, "SWING_TAKE_PROFIT", dry_run):
                         high_water_marks.pop(t212_ticker, None)
                         trailing_active.pop(t212_ticker, None)
-                        breakeven_active.pop(t212_ticker, None)
                     continue
 
             # D) SALIDA TÉCNICA AL CIERRE DIARIO (21:30 - 21:58 Madrid): Cruce bajo EMA(10) o Límite 15 días
