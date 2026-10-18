@@ -9,13 +9,10 @@ on:
         required: false
         default: '200'
 
-  # Horarios en UTC, robustos al cambio de hora verano/invierno de Madrid.
-  # El propio bot decide cuándo operar según la hora de Madrid (15:30-22:00).
-  # Turno 1: 13:00 UTC durante 200 min (hasta 16:20 UTC)
-  # Turno 2: 16:15 UTC durante 280 min (hasta 20:55 UTC, cubre cierre 21:50 Madrid en verano e invierno)
-  schedule:
-    - cron: '0 13 * * 1-5'
-    - cron: '15 16 * * 1-5'
+  # Cron programado DESACTIVADO por el usuario. El bot ya no se ejecutará automáticamente.
+  # schedule:
+  #   - cron: '0 13 * * 1-5'
+  #   - cron: '15 16 * * 1-5'
 
 # Evita que dos instancias se pisen: el turno 2 relevará al turno 1
 concurrency:
