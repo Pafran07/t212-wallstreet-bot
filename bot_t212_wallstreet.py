@@ -72,7 +72,7 @@ DEFAULT_SWING_SL    = 0.0300  # -3.00% Stop Loss base (ajustado entre -2.5% y -4
 MAX_HOLD_DAYS       = 15      # Rotación máxima de capital si un activo se estanca
 
 LOOP_SECONDS        = 60      # Escaneo pausado cada 60s (Swing no requiere micro-ticks)
-MAX_POSITIONS       = 4       # 4 slots simultáneos (25% del capital por operación)
+MAX_POSITIONS       = 3       # 3 slots simultáneos (~15.50€ por operación para máxima precisión fraccionaria)
 
 # ── Universo de tickers ───────────────────────────────────────────────────────
 UNIVERSE_PATH = pathlib.Path(__file__).with_name("universe.json")
@@ -517,11 +517,11 @@ def run(dry_run: bool, max_minutes: int = 0):
                 candidates.sort(key=lambda x: x["score"], reverse=True)
                 top = candidates[0]
 
-                # Calcular capital por slot (dividiendo entre slots libres o total)
-                eur_per_trade = total_eur / MAX_POSITIONS
-                eur_to_spend  = min(free_eur * 0.95, eur_per_trade)
-                approx_usd    = eur_to_spend * 1.08
-                shares_qty    = approx_usd / top["price"]
+                # Calcular capital por slot sobre el efectivo libre real (excluyendo regalo NVDA)
+                remaining_slots = max(1, MAX_POSITIONS - active_count)
+                eur_to_spend    = (free_eur * 0.96) / remaining_slots
+                approx_usd      = eur_to_spend * 1.08
+                shares_qty      = approx_usd / top["price"]
 
                 log.info(
                     f"🔥 SEÑAL SWING PULLBACK: {top['y_sym']} "
