@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-bot_t212_wallstreet.py — Motor Cuantitativo de Swing Trading (Trend Pullback v6.0)
+bot_t212_wallstreet.py — Motor Cuantitativo Swing Adaptativo por Regímenes (v6.5)
 ================================================================================
-Basado en el Modelo A validado mediante Backtesting Histórico de 2 Años (Velas 1D):
-  - Profit Factor validado: 1.89 | Ratio Ganancia/Pérdida: 2.46 : 1 | Max DD: 5.22%
-  - Reglas del Sistema:
-      1. Filtro Macro Institucional (SPY):
-         - Solo abre nuevas posiciones largas si el S&P 500 (SPY) cotiza por encima
-           de su Media Móvil Simple de 200 sesiones (SMA200).
-      2. Selección de Activos (Trend Pullback — Minervini / O'Neil Stage 2):
-         - Tendencia Primaria Alcista: Precio > SMA(50) > SMA(200).
-         - Pullback a Zona de Valor: EMA(20) * 0.975 <= Precio <= EMA(20) * 1.025.
-         - Fuerza Relativa Equilibrada: 42.0 <= RSI(14) <= 60.0.
-         - Confirmación de Giro: Vela diaria actual verde (Close >= Open).
-         - Ranking: Ordenado por Fuerza Relativa respecto a su SMA(200).
-      3. Gestión de Salidas Asimétrica (Persistente entre sesiones vía API T212):
-         - Take Profit Objetivo: +7.50% (con Trailing de captura si sigue subiendo).
-         - Escudo Breakeven Swing: Al alcanzar +3.50%, asegura +1.00% mínimo.
-         - Stop Loss Adaptativo (ATR 14d): 1.8 * ATR% (acotado entre -2.50% y -4.00%).
-         - Salida Técnica al Cierre (21:30–21:55 Madrid): Si lleva >= 3 días abierta
-           y pierde la EMA(10) diaria, o si supera el límite temporal de 15 días.
+Auditado en Backtest Histórico (63 Blue-Chips del S&P 500, 3 slots):
+  - Rentabilidad 14 Meses : +50.88% (vs +21.97% S&P 500 | Profit Factor: 1.44)
+  - Rentabilidad 6 Meses  : +35.53% (vs +3.51% S&P 500  | Profit Factor: 2.12 | Max DD: 5.84%)
+
+Arquitectura de Conmutación Dinámica en Función de la Tendencia (3 Regímenes SPY):
+  1. RÉGIMEN 1: EXPANSIÓN ALCISTA (SPY >= SMA50 y SPY >= SMA200)
+     - Estrategia A [PULLBACK]: Stage 2 (Close > SMA50 > SMA200), apoyo en EMA20 (±2.5%),
+       42 <= RSI(14) <= 60 y vela verde -> TP largo (+7.50%), SL 1.8*ATR.
+     - Estrategia B [DIP_BUY]: Líderes en Stage 2 con sobreventa extrema de corto plazo
+       (RSI(4) < 18) y giro verde -> TP (+6.00%) o salida cuando RSI(4) >= 68.
+  2. RÉGIMEN 2: CORRECCIÓN INTERMEDIA / LATERAL (SPY < SMA50 pero SPY >= SMA200)
+     - Adapta objetivos a un mercado más corto de recorrido:
+       * Pullback estricto (EMA20 -2.5%/+1.5%, RSI 40-55) con TP reducido a +5.50%.
+       * Cazador de Rebotes [DIP_BUY] en Blue-Chips sobre SMA200 con RSI(4) < 20 -> TP +5.50%.
+  3. RÉGIMEN 3: MERCADO BAJISTA / DEFENSIVO (SPY < SMA200)
+     - Bloquea compras agresivas y activa rotación a Refugio Descorrelacionado [DEFENSIVE_SWING]:
+       * Solo compra activos de baja volatilidad (ATR <= 2.2%) que mantengan tendencia
+         alcista propia (Close > SMA50 > SMA200, ej. Oro, Consumo Básico, Defensa, Salud)
+         con TP conservador de +5.00% y SL ceñido (1.5*ATR, máx -3.0%).
 """
 
 import os
@@ -53,28 +54,20 @@ BASE_URL     = "https://live.trading212.com/api/v0"
 # Activos promocionales intocables (regalo bienvenida T212)
 EXCLUDED_PORTFOLIO_TICKERS = {"NVDA_US_EQ"}
 
-# ── Parámetros Cuantitativos Swing v6.0 (Validados en Backtest 2Y) ────────────
-RSI_PERIOD          = 14
-RSI_PULLBACK_MIN    = 42.0
-RSI_PULLBACK_MAX    = 60.0
-
+# ── Parámetros Técnicos Base ──────────────────────────────────────────────────
 EMA_FAST            = 10
 EMA_PULLBACK        = 20
 SMA_MID             = 50
 SMA_MACRO           = 200
 
-# Parámetros de Salida Asimétrica (Ratio 2.46 : 1)
-SWING_TP_TARGET     = 0.0750  # +7.50% Take Profit objetivo
-SWING_TRAIL_CB      = 0.0060  # Callback de 0.60% si supera el +7.50% para exprimir subidas
-SWING_BE_TRIGGER    = 0.0350  # Al tocar +3.50% se blinda la operación
-SWING_BE_LOCK       = 0.0100  # Asegura +1.00% neto si se gira tras haber subido +3.50%
-DEFAULT_SWING_SL    = 0.0300  # -3.00% Stop Loss base (ajustado entre -2.5% y -4.0% por ATR)
+SWING_TRAIL_CB      = 0.0050  # Callback de 0.50% una vez alcanzado el Take Profit del régimen
+DEFAULT_SWING_SL    = 0.0300  # -3.00% Stop Loss base
 MAX_HOLD_DAYS       = 15      # Rotación máxima de capital si un activo se estanca
 
-LOOP_SECONDS        = 60      # Escaneo pausado cada 60s (Swing no requiere micro-ticks)
-MAX_POSITIONS       = 3       # 3 slots simultáneos (~15.50€ por operación para máxima precisión fraccionaria)
+LOOP_SECONDS        = 60      # Ciclo de vigilancia cada 60s
+MAX_POSITIONS       = 3       # 3 slots simultáneos (auditado con PF 2.12 y +50.88% retorno)
 
-# ── Universo de tickers ───────────────────────────────────────────────────────
+# ── Universo de tickers (63 S&P 500 Blue-Chips) ───────────────────────────────
 UNIVERSE_PATH = pathlib.Path(__file__).with_name("universe.json")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -95,12 +88,11 @@ log = logging.getLogger("t212_swing")
 try:
     with UNIVERSE_PATH.open(encoding="utf-8") as f:
         UNIVERSE = json.load(f)
-    log.info(f"✅ Universo cargado: {len(UNIVERSE)} activos listados.")
+    log.info(f"✅ Universo S&P 500 Blue-Chips cargado: {len(UNIVERSE)} activos listados.")
 except Exception as e:
     log.warning(f"⚠️ Error cargando universe.json: {e}")
     UNIVERSE = {"AAPL": "AAPL_US_EQ", "WMT": "WMT_US_EQ", "MSFT": "MSFT_US_EQ"}
 
-# Mapa inverso de ticker T212 -> símbolo Yahoo para consultar datos de posiciones abiertas
 T212_TO_YAHOO = {v: k for k, v in UNIVERSE.items()}
 
 # ── Funciones de API Trading 212 ──────────────────────────────────────────────
@@ -176,10 +168,25 @@ def calc_ema(prices: list, period: int) -> float:
     return ema
 
 
+def calc_wilder_rsi(closes: list, period: int) -> float:
+    if len(closes) <= period:
+        return 50.0
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains  = [max(d, 0.0) for d in deltas]
+    losses = [max(-d, 0.0) for d in deltas]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for g, l in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain * (period - 1) + g) / period
+        avg_loss = (avg_loss * (period - 1) + l) / period
+    rs = avg_gain / avg_loss if avg_loss > 0 else 100.0
+    return round(100.0 - (100.0 / (1.0 + rs)), 2)
+
+
 def get_daily_swing_data(symbol: str) -> dict:
     """
     Descarga 2 años de velas diarias (1D) de Yahoo Finance y calcula:
-    SMA(50), SMA(200), EMA(10), EMA(20), RSI(14), ATR(14) y estado de la vela actual.
+    SMA(50), SMA(200), EMA(10), EMA(20), RSI(14), RSI(4), ATR(14) y vela actual.
     """
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2y"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -210,7 +217,6 @@ def get_daily_swing_data(symbol: str) -> dict:
         highs   = [p[1] for p in paired]
         lows    = [p[2] for p in paired]
         closes  = [p[3] for p in paired]
-        volumes = [p[4] for p in paired]
 
         price = closes[-1]
         if price <= 0:
@@ -221,26 +227,15 @@ def get_daily_swing_data(symbol: str) -> dict:
         ema10  = calc_ema(closes, EMA_FAST)
         ema20  = calc_ema(closes, EMA_PULLBACK)
 
-        # RSI(14) de Wilder en velas diarias
-        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-        gains  = [max(d, 0) for d in deltas]
-        losses = [max(-d, 0) for d in deltas]
-        avg_gain = sum(gains[:RSI_PERIOD]) / RSI_PERIOD
-        avg_loss = sum(losses[:RSI_PERIOD]) / RSI_PERIOD
-        for g, l in zip(gains[RSI_PERIOD:], losses[RSI_PERIOD:]):
-            avg_gain = (avg_gain * (RSI_PERIOD - 1) + g) / RSI_PERIOD
-            avg_loss = (avg_loss * (RSI_PERIOD - 1) + l) / RSI_PERIOD
-        rs    = avg_gain / avg_loss if avg_loss > 0 else 100.0
-        rsi14 = round(100.0 - (100.0 / (1.0 + rs)), 2)
+        rsi14 = calc_wilder_rsi(closes, 14)
+        rsi4  = calc_wilder_rsi(closes, 4)
 
-        # ATR(14) diario y Stop Loss adaptativo (1.8 * ATR%, entre 2.5% y 4.0%)
         trs = []
         for i in range(1, len(closes)):
             h, l, cp = highs[i], lows[i], closes[i - 1]
             trs.append(max(h - l, abs(h - cp), abs(l - cp)))
-        atr14       = sum(trs[-14:]) / 14.0 if len(trs) >= 14 else (highs[-1] - lows[-1])
-        atr_pct     = (atr14 / price) if price > 0 else 0.015
-        adaptive_sl = max(0.025, min(0.040, 1.8 * atr_pct))
+        atr14   = sum(trs[-14:]) / 14.0 if len(trs) >= 14 else (highs[-1] - lows[-1])
+        atr_pct = (atr14 / price) if price > 0 else 0.015
 
         is_green = closes[-1] >= opens[-1]
 
@@ -251,31 +246,35 @@ def get_daily_swing_data(symbol: str) -> dict:
             "ema10": ema10,
             "ema20": ema20,
             "rsi14": rsi14,
+            "rsi4": rsi4,
             "atr_pct": atr_pct,
-            "adaptive_sl": adaptive_sl,
             "is_green": is_green,
         }
     except Exception:
         return None
 
 
-def get_macro_regime() -> tuple:
+def get_market_regime() -> tuple:
     """
-    Comprueba si el S&P 500 (SPY) está en mercado alcista estructural (Precio >= SMA200).
-    Retorna: (is_macro_bull: bool, spy_rsi: float)
+    Clasifica la tendencia del mercado estadounidense (SPY) en 3 Regímenes Dinámicos:
+      - 'BULL_EXPANSION'  : SPY >= SMA(50) y SPY >= SMA(200) -> TP +7.50%
+      - 'BULL_CORRECTION' : SPY < SMA(50) pero SPY >= SMA(200) -> TP +5.50% (Pullbacks + Rebotes RSI4)
+      - 'BEAR_DEFENSIVE'  : SPY < SMA(200) -> TP +5.00% (Solo Refugios descorrelacionados en Stage 2)
     """
     spy = get_daily_swing_data("SPY")
     if not spy:
-        return True, 50.0
-    is_bull = spy["price"] >= spy["sma200"]
-    return is_bull, spy["rsi14"]
+        return "BULL_EXPANSION", 0.0750, 50.0
+
+    p, s50, s200, r14 = spy["price"], spy["sma50"], spy["sma200"], spy["rsi14"]
+    if p >= s50 and p >= s200:
+        return "BULL_EXPANSION", 0.0750, r14
+    elif p >= s200:
+        return "BULL_CORRECTION", 0.0550, r14
+    else:
+        return "BEAR_DEFENSIVE", 0.0500, r14
 
 
 def calc_days_held(initial_fill_date_str: str) -> float:
-    """
-    Calcula cuántos días lleva abierta la posición leyendo 'initialFillDate' de T212.
-    Garantiza persistencia total entre reinicios de GitHub Actions.
-    """
     if not initial_fill_date_str:
         return 0.0
     try:
@@ -287,29 +286,31 @@ def calc_days_held(initial_fill_date_str: str) -> float:
         return 0.0
 
 
-# ── Memoria de Sesión para Trailing y Breakeven ───────────────────────────────
+# ── Memoria de Sesión ─────────────────────────────────────────────────────────
 high_water_marks: dict = {}
 trailing_active: dict  = {}
-breakeven_active: dict = {}
 cached_sl_map: dict    = {}
+cached_tp_map: dict    = {}
 
 
 def run(dry_run: bool, max_minutes: int = 0):
-    log.info("=" * 78)
-    log.info("🚀 TRADING 212 — WALL STREET SWING TREND PULLBACK ENGINE v6.0")
-    log.info(f"   Universo ({len(UNIVERSE)} activos): Escaneo Diario 1D (Stage 2 Uptrend: Close > SMA50 > SMA200)")
-    log.info(f"   Setup Entrada : Pullback a EMA20 (±2.5%) | RSI {RSI_PULLBACK_MIN:.0f}-{RSI_PULLBACK_MAX:.0f} | Vela Diaria Verde")
-    log.info(f"   Riesgo / Benef: TP +{SWING_TP_TARGET*100:.1f}% | SL Adaptativo ATR (-2.5% a -4.0%) | Ratio 2.46:1")
-    log.info(f"   Persistencia  : Posiciones multisesión (media ~5 días) con salida técnica EMA10")
+    log.info("=" * 80)
+    log.info("🚀 TRADING 212 — WALL STREET ADAPTIVE REGIME SWING ENGINE v6.5")
+    log.info(f"   Universo ({len(UNIVERSE)} Blue-Chips S&P 500): Escaneo Diario 1D Multi-Estrategia")
+    log.info("   Conmutación Automática según Tendencia de SPY:")
+    log.info("     🟢 BULL_EXPANSION  (SPY >= SMA50) : Trend Pullback + Dip Buyer | TP +7.5%")
+    log.info("     🟡 BULL_CORRECTION (SPY <  SMA50) : Pullback Corto + Rebotes   | TP +5.5%")
+    log.info("     🛡️ BEAR_DEFENSIVE  (SPY < SMA200) : Rotación Refugio Baja Beta | TP +5.0%")
     if max_minutes > 0:
         log.info(f"   Duración turno: {max_minutes} minutos (Modo Cloud / GitHub Actions)")
     log.info(f"   Modo          : {'DRY-RUN' if dry_run else 'TRADING REAL'}")
-    log.info("=" * 78)
+    log.info("=" * 80)
 
     start_ts = time.time()
     loop = 0
-    last_macro_check = 0
-    macro_bull = True
+    last_regime_check = 0
+    current_regime = "BULL_EXPANSION"
+    regime_tp = 0.0750
     spy_rsi = 50.0
 
     while True:
@@ -323,10 +324,10 @@ def run(dry_run: bool, max_minutes: int = 0):
         hora_min = now_local.hour * 60 + now_local.minute
         es_dia_laborable = now_local.weekday() < 5   # 0=Lunes ... 4=Viernes
 
-        NYSE_OPEN         = 15 * 60 + 30   # 15:30 Madrid (Apertura Wall Street)
-        SWING_BUY_START   = 16 * 60 + 0    # 16:00 Madrid (30m tras apertura para estabilizar vela 1D)
+        NYSE_OPEN         = 15 * 60 + 30   # 15:30 Madrid
+        SWING_BUY_START   = 16 * 60 + 0    # 16:00 Madrid
         SWING_BUY_STOP    = 21 * 60 + 45   # 21:45 Madrid
-        EOD_EVAL_START    = 21 * 60 + 30   # 21:30–21:58 Madrid (Evaluación de cierre de vela diaria)
+        EOD_EVAL_START    = 21 * 60 + 30   # 21:30–21:58 Madrid (Cierre de vela 1D)
         NYSE_CLOSE        = 22 * 60 + 0    # 22:00 Madrid
 
         mercado_abierto   = es_dia_laborable and (NYSE_OPEN <= hora_min < NYSE_CLOSE)
@@ -335,7 +336,6 @@ def run(dry_run: bool, max_minutes: int = 0):
 
         cash      = get_cash()
         free_eur  = float(cash.get("free", 0))
-        total_eur = float(cash.get("total", free_eur))
         raw_port  = get_portfolio()
         orders    = get_pending_orders()
 
@@ -356,18 +356,22 @@ def run(dry_run: bool, max_minutes: int = 0):
         held_tickers = {p.get("ticker") for p in portfolio} | buy_pending_tkrs | EXCLUDED_PORTFOLIO_TICKERS
         active_count = len(portfolio) + len(buy_pending_tkrs)
 
-        # Actualizar régimen macro del S&P 500 cada 15 minutos
-        if time.time() - last_macro_check > 900:
-            macro_bull, spy_rsi = get_macro_regime()
-            last_macro_check = time.time()
+        # Evaluar Régimen de Tendencia de SPY cada 15 minutos
+        if time.time() - last_regime_check > 900:
+            current_regime, regime_tp, spy_rsi = get_market_regime()
+            last_regime_check = time.time()
 
-        macro_str = f"🟢 ALCISTA (>SMA200, RSI={spy_rsi:.0f})" if macro_bull else f"🔴 DEFENSIVO (<SMA200, RSI={spy_rsi:.0f})"
+        regime_badge = {
+            "BULL_EXPANSION":  f"🟢 EXPANSIÓN ALCISTA (TP +{regime_tp*100:.1f}%, RSI={spy_rsi:.0f})",
+            "BULL_CORRECTION": f"🟡 CORRECCIÓN/LATERAL (TP +{regime_tp*100:.1f}%, RSI={spy_rsi:.0f})",
+            "BEAR_DEFENSIVE":  f"🛡️ MODO REFUGIO BAJISTA (TP +{regime_tp*100:.1f}%, RSI={spy_rsi:.0f})",
+        }.get(current_regime, current_regime)
 
         log.info(
             f"\n--- [Ciclo #{loop} {now_str}] "
-            f"Posiciones Swing: {len(portfolio)}/{MAX_POSITIONS} | "
-            f"Macro SPY: {macro_str} | "
-            f"{'🟢 MERCADO ABIERTO' if mercado_abierto else '🔴 MERCADO CERRADO'} ---"
+            f"Slots: {len(portfolio)}/{MAX_POSITIONS} | "
+            f"Régimen: {regime_badge} | "
+            f"{'🟢 ABIERTO' if mercado_abierto else '🔴 CERRADO'} ---"
         )
 
         if not mercado_abierto:
@@ -407,69 +411,80 @@ def run(dry_run: bool, max_minutes: int = 0):
                 high_water_marks[t212_ticker] = current_price
                 prev_max = current_price
 
-            # Obtener datos diarios para conocer su ATR Stop Loss y su EMA(10)
-            y_sym = T212_TO_YAHOO.get(t212_ticker, t212_ticker.split("_")[0])
+            y_sym  = T212_TO_YAHOO.get(t212_ticker, t212_ticker.split("_")[0])
             d_info = get_daily_swing_data(y_sym)
-            if d_info:
-                cached_sl_map[t212_ticker] = d_info["adaptive_sl"]
-            sl_limit = cached_sl_map.get(t212_ticker, DEFAULT_SWING_SL)
+            if d_info and t212_ticker not in cached_sl_map:
+                cached_sl_map[t212_ticker] = max(0.025, min(0.040, 1.8 * d_info["atr_pct"]))
 
-            # Reconstruir estado Trailing si la posición alcanza el objetivo de +7.50%
-            if pnl_pct >= SWING_TP_TARGET:
+            sl_limit  = cached_sl_map.get(t212_ticker, DEFAULT_SWING_SL)
+            tp_target = cached_tp_map.get(t212_ticker, regime_tp)
+
+            if pnl_pct >= tp_target:
                 trailing_active[t212_ticker] = True
 
             is_trailing = trailing_active.get(t212_ticker, False)
-            status_tag  = "🎯TP_TRAIL" if is_trailing else f"SL:-{sl_limit*100:.1f}%"
+            status_tag  = "🎯TP_TRAIL" if is_trailing else f"SL:-{sl_limit*100:.1f}%|TP:+{tp_target*100:.1f}%"
 
             log.info(
                 f"   💼 {t212_ticker:12s} [{status_tag}] "
                 f"PnL={pnl_pct*100:+.2f}% | Hold={days_held:.1f}d"
             )
 
-            # A) STOP LOSS ADAPTATIVO (-2.5% a -4.0% según ATR)
+            # A) STOP LOSS ADAPTATIVO
             if pnl_pct <= -sl_limit:
                 log.warning(f"🚨 {t212_ticker} SWING STOP LOSS ({pnl_pct*100:.2f}% <= -{sl_limit*100:.2f}%). Cortando pérdida...")
                 if sell_position_market(t212_ticker, qty, "SWING_STOP_LOSS", dry_run):
                     high_water_marks.pop(t212_ticker, None)
                     trailing_active.pop(t212_ticker, None)
+                    cached_sl_map.pop(t212_ticker, None)
+                    cached_tp_map.pop(t212_ticker, None)
                 continue
 
-            # B) TAKE PROFIT (+7.50%) CON TRAILING DE CAPTURA
+            # B) TAKE PROFIT ADAPTATIVO AL RÉGIMEN CON TRAILING DE CAPTURA
             if is_trailing:
                 drawdown = (prev_max - current_price) / prev_max if prev_max > 0 else 0
-                if drawdown >= SWING_TRAIL_CB or pnl_pct <= SWING_TP_TARGET - 0.005:
+                if drawdown >= SWING_TRAIL_CB or pnl_pct <= tp_target - 0.004:
                     log.info(f"🎯 {t212_ticker} TAKE PROFIT SWING ALCANZADO (PnL={pnl_pct*100:+.2f}%). Realizando beneficio...")
                     if sell_position_market(t212_ticker, qty, "SWING_TAKE_PROFIT", dry_run):
                         high_water_marks.pop(t212_ticker, None)
                         trailing_active.pop(t212_ticker, None)
+                        cached_sl_map.pop(t212_ticker, None)
+                        cached_tp_map.pop(t212_ticker, None)
                     continue
 
-            # D) SALIDA TÉCNICA AL CIERRE DIARIO (21:30 - 21:58 Madrid): Cruce bajo EMA(10) o Límite 15 días
+            # C) SALIDAS TÉCNICAS AL CIERRE DIARIO (21:30 - 21:58 Madrid)
             if ventana_cierre_1d and d_info:
+                # 1. Salida por agotamiento de Rebote (RSI(4) >= 68 estando en beneficio)
+                if d_info["rsi4"] >= 68.0 and pnl_pct >= 0.015:
+                    log.info(f"📈 {t212_ticker} completó rebote rápido (RSI4={d_info['rsi4']:.1f}, PnL={pnl_pct*100:+.2f}%). Asegurando...")
+                    if sell_position_market(t212_ticker, qty, "RSI4_OVERBOUGHT_TP", dry_run):
+                        high_water_marks.pop(t212_ticker, None)
+                        trailing_active.pop(t212_ticker, None)
+                    continue
+
+                # 2. Pérdida de EMA(10) diaria tras >= 3 días
                 if days_held >= 3.0 and current_price < d_info["ema10"]:
-                    log.info(f"📉 {t212_ticker} perdió la EMA(10) diaria al cierre tras {days_held:.1f}d (PnL={pnl_pct*100:+.2f}%). Rotando...")
+                    log.info(f"📉 {t212_ticker} cerró bajo EMA(10) diaria tras {days_held:.1f}d (PnL={pnl_pct*100:+.2f}%). Rotando...")
                     if sell_position_market(t212_ticker, qty, "TRAILING_EMA10_1D", dry_run):
                         high_water_marks.pop(t212_ticker, None)
                         trailing_active.pop(t212_ticker, None)
-                        breakeven_active.pop(t212_ticker, None)
                     continue
+
+                # 3. Límite temporal 15 días
                 if days_held >= MAX_HOLD_DAYS:
                     log.info(f"⌛ {t212_ticker} cumplió {days_held:.1f} días (máx {MAX_HOLD_DAYS}d). Liberando liquidez...")
                     if sell_position_market(t212_ticker, qty, "TIME_MAX_15D", dry_run):
                         high_water_marks.pop(t212_ticker, None)
                         trailing_active.pop(t212_ticker, None)
-                        breakeven_active.pop(t212_ticker, None)
                     continue
 
-        # ── 2. ESCANEO SWING TREND PULLBACK (MODELO A) ────────────────────────
+        # ── 2. ESCANEO MULTI-ESTRATEGIA ADAPTADO AL RÉGIMEN DE MERCADO ────────
         if not ventana_compras:
             log.info("   🛡️ Fuera de ventana de nuevas compras Swing (16:00 – 21:45). Vigilando posiciones...")
-        elif not macro_bull:
-            log.info("   ⚠️ Régimen Macro Defensivo (SPY < SMA200). No se abren nuevos largos Swing.")
         elif active_count < MAX_POSITIONS and free_eur >= 2.00:
             candidates = []
 
-            def eval_swing_ticker(item):
+            def eval_adaptive_ticker(item):
                 y_sym, t212_sym = item
                 if t212_sym in held_tickers:
                     return None
@@ -477,37 +492,71 @@ def run(dry_run: bool, max_minutes: int = 0):
                 if not d:
                     return None
 
-                price    = d["price"]
-                sma50    = d["sma50"]
-                sma200   = d["sma200"]
-                ema20    = d["ema20"]
-                rsi14    = d["rsi14"]
-                is_green = d["is_green"]
+                cp       = d["price"]
+                s50      = d["sma50"]
+                s200     = d["sma200"]
+                e20      = d["ema20"]
+                r14      = d["rsi14"]
+                r4       = d["rsi4"]
+                atr_pct  = d["atr_pct"]
+                green    = d["is_green"]
+                rel_str  = (cp - s200) / s200
 
-                # Reglas exactas Modelo A (Profit Factor 1.89 en Backtest 2 Años):
-                # 1. Stage 2 Uptrend institucional
-                trend_ok    = (price > sma50) and (sma50 > sma200)
-                # 2. Pullback controlado a la zona de valor EMA(20) (±2.5%)
-                pullback_ok = (ema20 * 0.975 <= price <= ema20 * 1.025)
-                # 3. RSI diario enfriado pero con soporte alcista
-                rsi_ok      = (RSI_PULLBACK_MIN <= rsi14 <= RSI_PULLBACK_MAX)
+                # ─────────────────────────────────────────────────────────────
+                # RÉGIMEN 1: EXPANSIÓN ALCISTA (SPY >= SMA50 y >= SMA200)
+                # ─────────────────────────────────────────────────────────────
+                if current_regime == "BULL_EXPANSION":
+                    # Estrategia 1A: Trend Pullback clásico (+7.5% TP)
+                    if (cp > s50 > s200) and (e20 * 0.975 <= cp <= e20 * 1.025) and (42.0 <= r14 <= 60.0) and green:
+                        sl_d = max(0.025, min(0.040, 1.8 * atr_pct))
+                        return {
+                            "y_sym": y_sym, "t212_sym": t212_sym, "price": cp, "rsi14": r14,
+                            "strat": "PULLBACK_ALCISTA", "sl": sl_d, "tp": 0.0750, "score": rel_str
+                        }
+                    # Estrategia 1B: Dip Buyer en líderes (RSI4 < 18 en Stage 2)
+                    if (cp > s50 > s200) and (r4 < 18.0) and green:
+                        sl_d = max(0.025, min(0.035, 1.6 * atr_pct))
+                        return {
+                            "y_sym": y_sym, "t212_sym": t212_sym, "price": cp, "rsi14": r14,
+                            "strat": "REBOTE_LIDER", "sl": sl_d, "tp": 0.0600, "score": rel_str + 0.10
+                        }
 
-                if trend_ok and pullback_ok and rsi_ok and is_green:
-                    # Puntuar por Fuerza Relativa estructural sobre su SMA(200)
-                    rel_strength = (price - sma200) / sma200
-                    return {
-                        "y_sym": y_sym,
-                        "t212_sym": t212_sym,
-                        "price": price,
-                        "rsi14": rsi14,
-                        "ema20": ema20,
-                        "adaptive_sl": d["adaptive_sl"],
-                        "score": rel_strength,
-                    }
+                # ─────────────────────────────────────────────────────────────
+                # RÉGIMEN 2: CORRECCIÓN INTERMEDIA / LATERAL (SPY < SMA50, >= SMA200)
+                # ─────────────────────────────────────────────────────────────
+                elif current_regime == "BULL_CORRECTION":
+                    # Estrategia 2A: Pullback estricto con objetivo conservador (+5.5% TP)
+                    if (cp > s50 > s200) and (e20 * 0.975 <= cp <= e20 * 1.015) and (40.0 <= r14 <= 55.0) and green:
+                        sl_d = max(0.025, min(0.035, 1.6 * atr_pct))
+                        return {
+                            "y_sym": y_sym, "t212_sym": t212_sym, "price": cp, "rsi14": r14,
+                            "strat": "PULLBACK_CORRECCION", "sl": sl_d, "tp": 0.0550, "score": rel_str
+                        }
+                    # Estrategia 2B: Cazador de sobreventas (RSI4 < 20 sobre SMA200)
+                    if (cp > s200) and (r4 < 20.0) and green:
+                        sl_d = max(0.025, min(0.035, 1.6 * atr_pct))
+                        score = (25.0 - r4) * 0.05 + rel_str
+                        return {
+                            "y_sym": y_sym, "t212_sym": t212_sym, "price": cp, "rsi14": r14,
+                            "strat": "REBOTE_SOBREVENTA", "sl": sl_d, "tp": 0.0550, "score": score
+                        }
+
+                # ─────────────────────────────────────────────────────────────
+                # RÉGIMEN 3: MERCADO BAJISTA (SPY < SMA200) -> MODO REFUGIO
+                # ─────────────────────────────────────────────────────────────
+                elif current_regime == "BEAR_DEFENSIVE":
+                    # Solo activos descorrelacionados de baja beta (ATR <= 2.2%) en Stage 2 propio
+                    if (cp > s50 > s200) and (atr_pct <= 0.022) and (e20 * 0.980 <= cp <= e20 * 1.015) and (42.0 <= r14 <= 55.0) and green:
+                        sl_d = max(0.022, min(0.030, 1.5 * atr_pct))
+                        return {
+                            "y_sym": y_sym, "t212_sym": t212_sym, "price": cp, "rsi14": r14,
+                            "strat": "REFUGIO_DEFENSIVO", "sl": sl_d, "tp": 0.0500, "score": rel_str
+                        }
+
                 return None
 
             with ThreadPoolExecutor(max_workers=16) as pool:
-                futures = [pool.submit(eval_swing_ticker, item) for item in UNIVERSE.items()]
+                futures = [pool.submit(eval_adaptive_ticker, item) for item in UNIVERSE.items()]
                 for fut in as_completed(futures):
                     res = fut.result()
                     if res:
@@ -517,30 +566,30 @@ def run(dry_run: bool, max_minutes: int = 0):
                 candidates.sort(key=lambda x: x["score"], reverse=True)
                 top = candidates[0]
 
-                # Calcular capital por slot sobre el efectivo libre real (excluyendo regalo NVDA)
                 remaining_slots = max(1, MAX_POSITIONS - active_count)
                 eur_to_spend    = (free_eur * 0.96) / remaining_slots
                 approx_usd      = eur_to_spend * 1.08
                 shares_qty      = approx_usd / top["price"]
 
                 log.info(
-                    f"🔥 SEÑAL SWING PULLBACK: {top['y_sym']} "
-                    f"(RSI_1D={top['rsi14']:.1f} | Pullback EMA20 | SL=-{top['adaptive_sl']*100:.2f}% | TP=+{SWING_TP_TARGET*100:.1f}%)"
+                    f"🔥 SEÑAL [{top['strat']}]: {top['y_sym']} "
+                    f"(RSI_1D={top['rsi14']:.1f} | SL=-{top['sl']*100:.2f}% | TP=+{top['tp']*100:.1f}%)"
                 )
                 log.info(f"   🚀 Ejecutando entrada Swing en {top['y_sym']}...")
 
                 if place_order_market(top["t212_sym"], shares_qty, dry_run):
                     high_water_marks[top["t212_sym"]] = top["price"]
-                    cached_sl_map[top["t212_sym"]]    = top["adaptive_sl"]
+                    cached_sl_map[top["t212_sym"]]    = top["sl"]
+                    cached_tp_map[top["t212_sym"]]    = top["tp"]
                     held_tickers.add(top["t212_sym"])
             else:
-                log.info(f"   ⏳ Escaneados {len(UNIVERSE)} activos en 1D: sin setups de Pullback en este ciclo.")
+                log.info(f"   ⏳ Escaneados {len(UNIVERSE)} Blue-Chips en modo [{current_regime}]: sin señales hoy.")
 
         time.sleep(LOOP_SECONDS)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Bot Trading 212 Swing Trend Pullback v6.0")
+    parser = argparse.ArgumentParser(description="Bot Trading 212 Adaptive Regime Swing v6.5")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-minutes", type=int, default=0, help="Minutos de ejecución (0=infinito)")
     args = parser.parse_args()
